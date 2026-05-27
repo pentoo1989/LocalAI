@@ -5,19 +5,31 @@ services:
     # Available images with CUDA, ROCm, SYCL
     # Image list (quay.io): https://quay.io/repository/go-skynet/local-ai?tab=tags
     # Image list (dockerhub): https://hub.docker.com/r/localai/localai
-    image: quay.io/go-skynet/local-ai:master
+    restart: unless-stopped    
+    container_name: localai
+    image: localai/localai:master-gpu-nvidia-cuda-13
     build:
       context: .
       dockerfile: Dockerfile
       args:
       - IMAGE_TYPE=core
       - BASE_IMAGE=ubuntu:24.04
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/readyz"]
+      interval: 1m
+      timeout: 20m
+      retries: 5
     ports:
       - 8080:8080
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["apt-get update && apt-get install -y curl && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs && npm install -g mcp-searxng --prefix /usr/local &&./local-ai run"]
     env_file:
       - .env
     environment:
       - MODELS_PATH=/models
+      - DEBUG=false
+      - LOCALAI_AUTH=true
+      - LOCALAI_API_KEY=sk-test
     #  - DEBUG=true
     ## Agents (LocalAGI) - https://localai.io/features/agents/
     #  - LOCALAI_DISABLE_AGENTS=false
@@ -29,16 +41,10 @@ services:
     #  - LOCALAI_AGENT_POOL_VECTOR_ENGINE=postgres
     #  - LOCALAI_AGENT_POOL_DATABASE_URL=postgresql://localrecall:localrecall@postgres:5432/localrecall?sslmode=disable
     volumes:
-      - models:/models
-      - images:/tmp/generated/images/
-      - data:/data
-      - backends:/backends
-      - configuration:/configuration
-    command:
-    # Here we can specify a list of models to run (see quickstart https://localai.io/basics/getting_started/#running-models )
-    # or an URL pointing to a YAML configuration file, for example:
-    # - https://gist.githubusercontent.com/mudler/ad601a0488b497b69ec549150d9edd18/raw/a8a8869ef1bb7e3830bf5c0bae29a0cce991ff8d/phi-2.yaml
-    - phi-2
+      - /opt/models:/models:cached
+      - /opt/localai/config:/configuration
+      - /opt/localai/data:/data
+      - /opt/localai/backends:/backends
     # For NVIDIA GPU support with CDI (recommended for NVIDIA Container Toolkit 1.14+):
     # Uncomment the following deploy section and use driver: nvidia.com/gpu.
     # Include `utility` in capabilities so nvidia-smi / NVML are available —
@@ -46,14 +52,15 @@ services:
     # Nodes UI will misreport memory usage.
     # environment:
     #   NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
-    # init: true   # avoids zombie-reap races that can make nvidia-smi flaky
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia.com/gpu
-    #           count: all
-    #           capabilities: [gpu, utility]
+    init: true   # avoids zombie-reap races that can make nvidia-smi flaky
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
     #
     # For legacy NVIDIA driver (for older NVIDIA Container Toolkit):
     # environment:
@@ -66,6 +73,34 @@ services:
     #         - driver: nvidia
     #           count: 1
     #           capabilities: [gpu, utility]
+
+  searxng:
+    container_name: searxng
+    hostname: searxng
+    image: docker.io/searxng/searxng:latest
+    restart: unless-stopped
+    ports:
+      - 8081:8080
+    environment:
+      - SEARXNG_BASE_URL=https://${SEARXNG_HOSTNAME:-localhost}/
+      - UWSGI_WORKERS=${SEARXNG_UWSGI_WORKERS:-4}
+      - UWSGI_THREADS=${SEARXNG_UWSGI_THREADS:-4}
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    volumes:
+      - /opt/localai/searxng:/etc/searxng:Z
+
+  valkey:
+    container_name: searxng-valkey
+    image: docker.io/valkey/valkey:9-alpine
+    command: valkey-server --save 30 1 --loglevel warning
+    restart: always
+    volumes:
+      - /opt/localai/valkey-data:/data/
 
   ## Uncomment for PostgreSQL-backed knowledge base (see Agents docs)
   # postgres:
