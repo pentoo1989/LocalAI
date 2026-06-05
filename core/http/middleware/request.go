@@ -310,6 +310,14 @@ func mergeOpenAIRequestAndModelConfig(config *config.ModelConfig, input *schema.
 		config.Temperature = input.Temperature
 	}
 
+	// Resolve the effective reasoning effort (request overrides the model config
+	// default), store it so gRPCPredictOpts forwards it to the backend as the
+	// reasoning_effort chat_template_kwarg (what gpt-oss / LFM2.5 read), and map
+	// it onto the enable_thinking toggle. "none" disables thinking (the #10072
+	// use case); a level enables it unless the config already disabled reasoning
+	// (an operator's explicit disable wins over a request asking to think).
+	config.ApplyReasoningEffort(input.ReasoningEffort)
+
 	// Collapse the modern max_completion_tokens alias into the
 	// legacy Maxtokens field so downstream code reads exactly one.
 	// MaxCompletionTokens wins on conflict — it's the canonical

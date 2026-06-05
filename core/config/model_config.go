@@ -63,6 +63,13 @@ type ModelConfig struct {
 	FunctionsConfig functions.FunctionsConfig `yaml:"function,omitempty" json:"function,omitempty"`
 	ReasoningConfig reasoning.Config          `yaml:"reasoning,omitempty" json:"reasoning,omitempty"`
 
+	// ReasoningEffort is the default reasoning effort (none|minimal|low|medium|high)
+	// for this model. A per-request reasoning_effort overrides it. It is forwarded
+	// to the backend as the reasoning_effort chat_template_kwarg (see
+	// gRPCPredictOpts), so jinja-templated models that key on it — e.g. gpt-oss
+	// (Harmony) or LFM2.5 — honor it; "none" also toggles enable_thinking off.
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty" json:"reasoning_effort,omitempty"`
+
 	FeatureFlag FeatureFlag `yaml:"feature_flags,omitempty" json:"feature_flags,omitempty"` // Feature Flag registry. We move fast, and features may break on a per model/backend basis. Registry for (usually temporary) flags that indicate aborting something early.
 	// LLM configs (GPT4ALL, Llama.cpp, ...)
 	LLMConfig `yaml:",inline" json:",inline"`
@@ -487,6 +494,40 @@ type Pipeline struct {
 	LLM           string `yaml:"llm,omitempty" json:"llm,omitempty"`
 	Transcription string `yaml:"transcription,omitempty" json:"transcription,omitempty"`
 	VAD           string `yaml:"vad,omitempty" json:"vad,omitempty"`
+
+	// ReasoningEffort sets the reasoning effort (none|minimal|low|medium|high) for
+	// the pipeline's LLM without editing the LLM model config. Overrides the LLM's
+	// own reasoning_effort. Unset leaves the LLM model config in charge.
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty" json:"reasoning_effort,omitempty"`
+}
+
+// ApplyReasoningEffort resolves the effective reasoning effort — a per-request
+// value (requestEffort) overrides the config's own ReasoningEffort default —
+// stores it on the config so gRPCPredictOpts forwards it to the backend as the
+// reasoning_effort chat_template_kwarg, and maps it onto the enable_thinking
+// toggle the backend also reads:
+//   - "none" always disables thinking.
+//   - any explicit level enables it, UNLESS the config already disabled reasoning
+//     (an operator's explicit disable wins over a request asking to think).
+//
+// An empty requestEffort keeps the config's own default. With no effort set
+// anywhere it is a no-op, leaving the model's reasoning settings untouched.
+func (c *ModelConfig) ApplyReasoningEffort(requestEffort string) {
+	effort := requestEffort
+	if effort == "" {
+		effort = c.ReasoningEffort
+	}
+	c.ReasoningEffort = effort
+	switch strings.ToLower(effort) {
+	case "none":
+		disable := true
+		c.ReasoningConfig.DisableReasoning = &disable
+	case "minimal", "low", "medium", "high":
+		if c.ReasoningConfig.DisableReasoning == nil || !*c.ReasoningConfig.DisableReasoning {
+			enable := false
+			c.ReasoningConfig.DisableReasoning = &enable
+		}
+	}
 }
 
 // @Description File configuration for model downloads
@@ -694,6 +735,18 @@ func (c *ModelConfig) IsModelURL() bool {
 	return uri.LooksLikeURL()
 }
 
+// ModelID returns the identifier used to reference this model across the
+// system: the configured Name, falling back to Model when Name is empty.
+// This is the single source of truth for the id fed to model.WithModelID and
+// the prefix-cache chain salt; both MUST agree with the router's tracking key
+// or the prefix-cache salt diverges silently.
+func (c ModelConfig) ModelID() string {
+	if c.Name != "" {
+		return c.Name
+	}
+	return c.Model
+}
+
 // ModelFileName returns the filename of the model
 // If the model is a URL, it will return the MD5 of the URL which is the filename
 func (c *ModelConfig) ModelFileName() string {
@@ -730,6 +783,17 @@ func (cfg *ModelConfig) SetDefaults(opts ...ConfigLoaderOption) {
 	// inference path reads cfg.Proxy.Mode.
 	if cfg.Proxy.Mode == "" {
 		cfg.Proxy.Mode = ProxyModePassthrough
+	}
+
+	// When templating is delegated to the backend (use_tokenizer_template),
+	// the backend also owns tool-call grammar generation and parsing. Sending
+	// a LocalAI-generated grammar alongside overrides the backend's native
+	// (name-first) tool pipeline and makes it stream the tool-call JSON back as
+	// plain content (issue #10052). The GGUF auto-import path already couples
+	// these two flags; enforce it here so gallery and hand-written configs that
+	// set use_tokenizer_template directly stay consistent.
+	if cfg.TemplateConfig.UseTokenizerTemplate {
+		cfg.FunctionsConfig.GrammarConfig.NoGrammar = true
 	}
 
 	// Apply model-family-specific inference defaults before generic fallbacks.

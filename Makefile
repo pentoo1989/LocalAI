@@ -1,5 +1,5 @@
 # Disable parallel execution for backend builds
-.NOTPARALLEL: backends/diffusers backends/llama-cpp backends/turboquant backends/outetts backends/piper backends/stablediffusion-ggml backends/whisper backends/faster-whisper backends/silero-vad backends/local-store backends/huggingface backends/rfdetr backends/insightface backends/speaker-recognition backends/kitten-tts backends/kokoro backends/chatterbox backends/llama-cpp-darwin backends/neutts build-darwin-python-backend build-darwin-go-backend backends/mlx backends/diffuser-darwin backends/mlx-vlm backends/mlx-audio backends/mlx-distributed backends/stablediffusion-ggml-darwin backends/vllm backends/vllm-omni backends/sglang backends/moonshine backends/pocket-tts backends/qwen-tts backends/faster-qwen3-tts backends/qwen-asr backends/nemo backends/voxcpm backends/whisperx backends/ace-step backends/acestep-cpp backends/fish-speech backends/voxtral backends/opus backends/trl backends/llama-cpp-quantization backends/kokoros backends/sam3-cpp backends/qwen3-tts-cpp backends/vibevoice-cpp backends/localvqe backends/tinygrad backends/sherpa-onnx backends/ds4 backends/ds4-darwin backends/liquid-audio
+.NOTPARALLEL: backends/diffusers backends/llama-cpp backends/turboquant backends/outetts backends/piper backends/stablediffusion-ggml backends/whisper backends/crispasr backends/parakeet-cpp backends/faster-whisper backends/silero-vad backends/local-store backends/huggingface backends/rfdetr backends/rfdetr-cpp backends/insightface backends/speaker-recognition backends/kitten-tts backends/kokoro backends/chatterbox backends/llama-cpp-darwin backends/neutts build-darwin-python-backend build-darwin-go-backend backends/mlx backends/diffuser-darwin backends/mlx-vlm backends/mlx-audio backends/mlx-distributed backends/stablediffusion-ggml-darwin backends/vllm backends/vllm-omni backends/sglang backends/moonshine backends/pocket-tts backends/qwen-tts backends/faster-qwen3-tts backends/qwen-asr backends/nemo backends/voxcpm backends/whisperx backends/ace-step backends/acestep-cpp backends/fish-speech backends/voxtral backends/opus backends/trl backends/llama-cpp-quantization backends/kokoros backends/sam3-cpp backends/qwen3-tts-cpp backends/vibevoice-cpp backends/localvqe backends/tinygrad backends/sherpa-onnx backends/ds4 backends/ds4-darwin backends/liquid-audio
 
 GOCMD=go
 GOTEST=$(GOCMD) test
@@ -309,13 +309,20 @@ run-e2e-aio: protogen-go
 	@echo 'Running e2e AIO tests'
 	$(GOCMD) run github.com/onsi/ginkgo/v2/ginkgo --flake-attempts $(TEST_FLAKES) -v -r ./tests/e2e-aio
 
+# Distributed architecture e2e (PostgreSQL + NATS via testcontainers).
+# Includes NatsJWT specs (JWT-enabled NATS). Requires Docker.
+# VLLMMultinode is excluded here; use test-e2e-vllm-multinode for that.
+test-e2e-distributed: protogen-go
+	@echo 'Running distributed e2e tests (label Distributed, incl. NatsJWT)'
+	$(GOCMD) run github.com/onsi/ginkgo/v2/ginkgo --label-filter='Distributed && !VLLMMultinode' --flake-attempts $(TEST_FLAKES) -v -r ./tests/e2e/distributed
+
 # vLLM multi-node DP smoke (CPU). Builds local-ai:tests and the
 # cpu-vllm backend from the current working tree, then drives a
 # head + headless follower via testcontainers-go and asserts a chat
 # completion. BuildKit caches both images, so re-runs only rebuild
 # what changed. The test lives under tests/e2e/distributed and is
 # selected by the VLLMMultinode label so it doesn't run alongside
-# the other distributed-suite tests by default.
+# test-e2e-distributed.
 test-e2e-vllm-multinode: docker-build-e2e extract-backend-vllm protogen-go
 	@echo 'Running e2e vLLM multi-node DP test'
 	LOCALAI_IMAGE=local-ai \
@@ -558,6 +565,7 @@ prepare-test-extra: protogen-python
 	$(MAKE) -C backend/python/insightface
 	$(MAKE) -C backend/python/speaker-recognition
 	$(MAKE) -C backend/rust/kokoros kokoros-grpc
+	$(MAKE) -C backend/go/rfdetr-cpp
 
 test-extra: prepare-test-extra
 	$(MAKE) -C backend/python/transformers test
@@ -584,6 +592,7 @@ test-extra: prepare-test-extra
 	$(MAKE) -C backend/python/insightface test
 	$(MAKE) -C backend/python/speaker-recognition test
 	$(MAKE) -C backend/rust/kokoros test
+	$(MAKE) -C backend/go/rfdetr-cpp test
 
 ##
 ## End-to-end gRPC tests that exercise a built backend container image.
@@ -989,6 +998,19 @@ test-extra-backend-whisper-transcription: docker-build-whisper
 	BACKEND_TEST_CAPS=health,load,transcription \
 	$(MAKE) test-extra-backend
 
+## Audio transcription wrapper for the parakeet-cpp (parakeet.cpp ggml port)
+## backend. Mirrors test-extra-backend-whisper-transcription: drives the
+## AudioTranscription / AudioTranscriptionStream RPCs against a published
+## Parakeet GGUF using the JFK 11s clip from whisper.cpp's CI samples. Not
+## part of the default test suite - run explicitly once the pinned model URL
+## is reachable.
+test-extra-backend-parakeet-cpp-transcription: docker-build-parakeet-cpp
+	BACKEND_IMAGE=local-ai-backend:parakeet-cpp \
+	BACKEND_TEST_MODEL_URL=https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/main/tdt_ctc-110m-f16.gguf \
+	BACKEND_TEST_AUDIO_URL=https://github.com/ggml-org/whisper.cpp/raw/master/samples/jfk.wav \
+	BACKEND_TEST_CAPS=health,load,transcription \
+	$(MAKE) test-extra-backend
+
 ## LocalVQE audio transform (joint AEC + noise suppression + dereverb).
 ## Exercises the audio_transform capability end-to-end: batch transform
 ## of a real WAV fixture and bidi streaming of synthetic silent frames.
@@ -1147,6 +1169,8 @@ BACKEND_HUGGINGFACE = huggingface|golang|.|false|true
 BACKEND_SILERO_VAD = silero-vad|golang|.|false|true
 BACKEND_STABLEDIFFUSION_GGML = stablediffusion-ggml|golang|.|--progress=plain|true
 BACKEND_WHISPER = whisper|golang|.|false|true
+BACKEND_CRISPASR = crispasr|golang|.|false|true
+BACKEND_PARAKEET_CPP = parakeet-cpp|golang|.|false|true
 BACKEND_VOXTRAL = voxtral|golang|.|false|true
 BACKEND_ACESTEP_CPP = acestep-cpp|golang|.|false|true
 BACKEND_QWEN3_TTS_CPP = qwen3-tts-cpp|golang|.|false|true
@@ -1196,6 +1220,7 @@ BACKEND_KOKOROS = kokoros|rust|.|false|true
 
 # C++ backends (Go wrapper with purego)
 BACKEND_SAM3_CPP = sam3-cpp|golang|.|false|true
+BACKEND_RFDETR_CPP = rfdetr-cpp|golang|.|false|true
 
 # Helper function to build docker image for a backend
 # Usage: $(call docker-build-backend,BACKEND_NAME,DOCKERFILE_TYPE,BUILD_CONTEXT,PROGRESS_FLAG,NEEDS_BACKEND_ARG)
@@ -1233,6 +1258,8 @@ $(eval $(call generate-docker-build-target,$(BACKEND_HUGGINGFACE)))
 $(eval $(call generate-docker-build-target,$(BACKEND_SILERO_VAD)))
 $(eval $(call generate-docker-build-target,$(BACKEND_STABLEDIFFUSION_GGML)))
 $(eval $(call generate-docker-build-target,$(BACKEND_WHISPER)))
+$(eval $(call generate-docker-build-target,$(BACKEND_CRISPASR)))
+$(eval $(call generate-docker-build-target,$(BACKEND_PARAKEET_CPP)))
 $(eval $(call generate-docker-build-target,$(BACKEND_VOXTRAL)))
 $(eval $(call generate-docker-build-target,$(BACKEND_OPUS)))
 $(eval $(call generate-docker-build-target,$(BACKEND_RERANKERS)))
@@ -1275,13 +1302,14 @@ $(eval $(call generate-docker-build-target,$(BACKEND_LLAMA_CPP_QUANTIZATION)))
 $(eval $(call generate-docker-build-target,$(BACKEND_TINYGRAD)))
 $(eval $(call generate-docker-build-target,$(BACKEND_KOKOROS)))
 $(eval $(call generate-docker-build-target,$(BACKEND_SAM3_CPP)))
+$(eval $(call generate-docker-build-target,$(BACKEND_RFDETR_CPP)))
 $(eval $(call generate-docker-build-target,$(BACKEND_SHERPA_ONNX)))
 
 # Pattern rule for docker-save targets
 docker-save-%: backend-images
 	docker save local-ai-backend:$* -o backend-images/$*.tar
 
-docker-build-backends: docker-build-llama-cpp docker-build-ik-llama-cpp docker-build-turboquant docker-build-ds4 docker-build-rerankers docker-build-vllm docker-build-vllm-omni docker-build-sglang docker-build-transformers docker-build-outetts docker-build-diffusers docker-build-kokoro docker-build-faster-whisper docker-build-coqui docker-build-chatterbox docker-build-vibevoice docker-build-liquid-audio docker-build-moonshine docker-build-pocket-tts docker-build-qwen-tts docker-build-fish-speech docker-build-faster-qwen3-tts docker-build-qwen-asr docker-build-nemo docker-build-voxcpm docker-build-whisperx docker-build-ace-step docker-build-acestep-cpp docker-build-voxtral docker-build-mlx-distributed docker-build-trl docker-build-llama-cpp-quantization docker-build-tinygrad docker-build-kokoros docker-build-sam3-cpp docker-build-qwen3-tts-cpp docker-build-vibevoice-cpp docker-build-localvqe docker-build-insightface docker-build-speaker-recognition docker-build-sherpa-onnx docker-build-cloud-proxy
+docker-build-backends: docker-build-llama-cpp docker-build-ik-llama-cpp docker-build-turboquant docker-build-ds4 docker-build-rerankers docker-build-vllm docker-build-vllm-omni docker-build-sglang docker-build-transformers docker-build-outetts docker-build-diffusers docker-build-kokoro docker-build-faster-whisper docker-build-crispasr docker-build-coqui docker-build-chatterbox docker-build-vibevoice docker-build-liquid-audio docker-build-moonshine docker-build-pocket-tts docker-build-qwen-tts docker-build-fish-speech docker-build-faster-qwen3-tts docker-build-qwen-asr docker-build-nemo docker-build-voxcpm docker-build-whisperx docker-build-ace-step docker-build-acestep-cpp docker-build-voxtral docker-build-mlx-distributed docker-build-trl docker-build-llama-cpp-quantization docker-build-tinygrad docker-build-kokoros docker-build-sam3-cpp docker-build-rfdetr-cpp docker-build-qwen3-tts-cpp docker-build-vibevoice-cpp docker-build-localvqe docker-build-insightface docker-build-speaker-recognition docker-build-sherpa-onnx docker-build-cloud-proxy
 
 ########################################################
 ### Mock Backend for E2E Tests
@@ -1309,6 +1337,13 @@ build-ui-test-server: build-mock-backend react-ui protogen-go
 test-ui-e2e: build-ui-test-server
 	cd core/http/react-ui && npm install && npx playwright install --with-deps chromium && npx playwright test
 
+## Optional Playwright worker count for the UI e2e targets below. Pass
+## UI_TEST_WORKERS=N (e.g. `make test-ui-coverage UI_TEST_WORKERS=20`) to
+## override Playwright's default (cores/2). Empty by default so Playwright
+## picks its own worker count.
+UI_TEST_WORKERS ?=
+PLAYWRIGHT_WORKERS_FLAG = $(if $(UI_TEST_WORKERS),--workers=$(UI_TEST_WORKERS),)
+
 ## Fast Playwright e2e run used by the pre-commit hook on React UI changes.
 ## Force-rebuilds the (non-instrumented) dist so the suite tests the working
 ## tree — not a stale dist the `react-ui` skip-guard would leave — re-embeds
@@ -1318,22 +1353,24 @@ test-ui-e2e: build-ui-test-server
 test-ui: build-mock-backend protogen-go
 	cd core/http/react-ui && bun install && bun run build
 	$(GOCMD) build -o tests/e2e-ui/ui-test-server ./tests/e2e-ui
-	cd core/http/react-ui && sh $(CURDIR)/scripts/ensure-playwright-browser.sh && bunx playwright test
+	cd core/http/react-ui && sh $(CURDIR)/scripts/ensure-playwright-browser.sh && bunx playwright test $(PLAYWRIGHT_WORKERS_FLAG)
 
-## React UI code coverage from the Playwright e2e suite. Builds an
-## istanbul-instrumented bundle (COVERAGE=true), re-embeds it into the
-## ui-test-server (the dist is //go:embed'ed at compile time), runs the
-## Playwright specs — which harvest window.__coverage__ via the coverage
-## fixture — and writes an nyc report to core/http/react-ui/coverage/.
-## Removes the instrumented dist afterwards so normal builds aren't served
-## instrumented assets.
+## React UI code coverage from the Playwright e2e suite. Builds a
+## NON-instrumented bundle with source maps (COVERAGE_V8=true), re-embeds it
+## into the ui-test-server (the dist is //go:embed'ed at compile time), runs the
+## Playwright specs which collect native Chromium V8 coverage (PW_V8_COVERAGE=1)
+## — far cheaper than istanbul's build-time counters (~40% faster end-to-end) —
+## convert it to istanbul via v8-to-istanbul in the coverage fixture, and write
+## an nyc report to core/http/react-ui/coverage/. Removes the dist afterwards so
+## normal builds aren't served source-mapped assets. (The legacy istanbul path
+## still exists: `bun run build:coverage` + unset PW_V8_COVERAGE.)
 test-ui-coverage: build-mock-backend protogen-go
 	trap 'rm -rf "$(CURDIR)/core/http/react-ui/dist"' EXIT; \
-	( cd core/http/react-ui && bun install && bun run build:coverage ) && \
+	( cd core/http/react-ui && bun install && bun run build:coverage-v8 ) && \
 	$(GOCMD) build -o tests/e2e-ui/ui-test-server ./tests/e2e-ui && \
 	( cd core/http/react-ui && rm -rf .nyc_output coverage && \
 	    sh $(CURDIR)/scripts/ensure-playwright-browser.sh && \
-	    bunx playwright test && bun run coverage:report )
+	    PW_V8_COVERAGE=1 bunx playwright test $(PLAYWRIGHT_WORKERS_FLAG) && bun run coverage:report )
 
 ## UI coverage baseline (committed) and the strict gate that compares against
 ## it — the React mirror of test-coverage-baseline / test-coverage-check.
